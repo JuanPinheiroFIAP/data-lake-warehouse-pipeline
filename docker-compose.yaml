@@ -1,0 +1,95 @@
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: minio_local
+    entrypoint:
+      - sh
+      - -euc
+      - |
+        minio server /data --console-address ":9001"
+    restart: always
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_PROMETHEUS_AUTH_TYPE: public
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 20s
+      retries: 5
+
+  postgres_erp:
+    image: postgres:17-alpine
+    container_name: postgres_erp
+    restart: always
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: ${ERP_POSTGRES_DB}
+      POSTGRES_USER: ${ERP_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${ERP_POSTGRES_PASSWORD}
+    command:
+      - postgres
+      - -c
+      - max_wal_size=4GB
+      - -c
+      - checkpoint_timeout=30min
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - work_mem=32MB
+    volumes:
+      - postgres_erp_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${ERP_POSTGRES_USER} -d ${ERP_POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-dw:
+    image: postgres:13
+    restart: always
+    shm_size: 128mb
+    volumes:
+      - postgres_dw_data:/var/lib/postgresql/data
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER_DW}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD_DW}
+      POSTGRES_DB: ${POSTGRES_DW}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER_DW} -d ${POSTGRES_PASSWORD_DW}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s 
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin4_container
+    restart: always
+    ports:
+      - "8888:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+
+  adminer:
+    image: adminer
+    restart: always
+    ports:
+      - 8081:8080
+
+volumes:
+  minio_data:
+  postgres_erp_data:
+  postgres_dw_data:
+  pgadmin-data:
+
