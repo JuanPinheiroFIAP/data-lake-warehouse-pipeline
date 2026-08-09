@@ -6,10 +6,13 @@ from botocore.exceptions import ClientError
 from datetime import datetime
 import io
 from dotenv import load_dotenv
+import pandas as pd
+import uuid
 
 load_dotenv()
 
 
+# Funções MinIO
 def iniciar_client_minio():
     """
     Inicializa e retorna o cliente Boto3 configurado para o MinIO local.
@@ -78,3 +81,23 @@ def upload_buffer_para_minio(
     except ClientError as e:
         print(e)
         raise e
+
+
+# --- Funções postgres ---
+# Função dedicada a extrair pequenas tabelas imutaveis
+def extrair_tabela_completa(engine, schema: str, nome_tabela: str) -> io.BytesIO:
+    """Lê uma tabela específica do banco e gera o arquivo Parquet bruto na memória RAM."""
+
+    # Usamos aspas duplas na f-string caso o banco tenha tabelas com nomes compostos ou maiúsculos
+    query = f'SELECT * FROM "{schema}"."{nome_tabela}"'
+    return pd.read_sql(query, engine)
+
+
+def converter_tabela_para_buffer(df: pd.DataFrame) -> io.BytesIO:
+    for col in df.select_dtypes(include=["object"]).columns:
+        df[col] = df[col].apply(lambda x: str(x) if isinstance(x, uuid.UUID) else x)
+
+        buffer_memoria = io.BytesIO()
+        df.to_parquet(buffer_memoria, index=False, engine="pyarrow")
+        buffer_memoria.seek(0)
+        return buffer_memoria

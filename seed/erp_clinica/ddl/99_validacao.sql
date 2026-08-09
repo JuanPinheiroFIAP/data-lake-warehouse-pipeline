@@ -11,7 +11,19 @@
 --   psql ... -f ddl/99_validacao.sql
 -- =============================================================================
 
-WITH checagens AS (
+-- O "agora" do cenário, que NÃO é o relógio de parede. A base cobre uma janela
+-- histórica configurável e a simulação de dias avança a partir dela, podendo
+-- passar da data real. Comparar watermark com now() acusaria violação onde só
+-- existe defasagem entre o calendário do cenário e o do host.
+WITH agora_cenario AS (
+    SELECT GREATEST(
+               (SELECT max(criado_em) FROM erp.agendamentos),
+               (SELECT max(criado_em) FROM erp.atividades_crm),
+               (SELECT max(criado_em) FROM erp.pagamentos),
+               (SELECT max(criado_em) FROM erp.pacientes)
+           ) AS momento
+),
+checagens AS (
 
     -- Financeiro: a soma das parcelas tem que reproduzir o valor do orçamento.
     SELECT 'parcelas somam o valor do orçamento' AS regra, count(*) AS violacoes
@@ -126,6 +138,45 @@ WITH checagens AS (
               FROM erp.oportunidade_historico_etapa
       ) AS eventos
      WHERE (ordem = 1) <> (etapa_origem_id IS NULL)
+
+    UNION ALL
+    -- CDC: `atualizado_em` é watermark. Se puder apontar adiante do "agora" do
+    -- cenário, um pipeline que guarda MAX(atualizado_em) salta o marcador para
+    -- frente e perde calado tudo que for alterado até aquela data.
+    -- Nota: `data_hora_agendada` PODE ser futura (slot reservado na agenda) —
+    -- a proibição vale só para a coluna de watermark.
+    SELECT 'atualizado_em não passa do agora do cenário', count(*)
+      FROM agora_cenario a,
+           LATERAL (
+            SELECT 1 FROM erp.pacientes       WHERE atualizado_em > a.momento
+  UNION ALL SELECT 1 FROM erp.agendamentos    WHERE atualizado_em > a.momento
+  UNION ALL SELECT 1 FROM erp.consultas       WHERE atualizado_em > a.momento
+  UNION ALL SELECT 1 FROM erp.prontuarios     WHERE atualizado_em > a.momento
+  UNION ALL SELECT 1 FROM erp.orcamentos      WHERE atualizado_em > a.momento
+  UNION ALL SELECT 1 FROM erp.orcamento_itens WHERE atualizado_em > a.momento
+  UNION ALL SELECT 1 FROM erp.parcelas        WHERE atualizado_em > a.momento
+  UNION ALL SELECT 1 FROM erp.oportunidades   WHERE atualizado_em > a.momento
+  UNION ALL SELECT 1 FROM erp.leads           WHERE atualizado_em > a.momento
+  UNION ALL SELECT 1 FROM erp.campanhas       WHERE atualizado_em > a.momento
+           ) AS falhas
+
+    UNION ALL
+    -- CDC: a linha não pode ter sido alterada antes de existir. Inversão aqui
+    -- indica timestamp montado a partir da data do fato em vez da data do
+    -- registro — e faz a ordenação por watermark mentir.
+    SELECT 'atualizado_em nunca antecede criado_em', count(*)
+      FROM (
+            SELECT 1 FROM erp.pacientes       WHERE atualizado_em < criado_em
+  UNION ALL SELECT 1 FROM erp.agendamentos    WHERE atualizado_em < criado_em
+  UNION ALL SELECT 1 FROM erp.consultas       WHERE atualizado_em < criado_em
+  UNION ALL SELECT 1 FROM erp.prontuarios     WHERE atualizado_em < criado_em
+  UNION ALL SELECT 1 FROM erp.orcamentos      WHERE atualizado_em < criado_em
+  UNION ALL SELECT 1 FROM erp.orcamento_itens WHERE atualizado_em < criado_em
+  UNION ALL SELECT 1 FROM erp.parcelas        WHERE atualizado_em < criado_em
+  UNION ALL SELECT 1 FROM erp.oportunidades   WHERE atualizado_em < criado_em
+  UNION ALL SELECT 1 FROM erp.leads           WHERE atualizado_em < criado_em
+  UNION ALL SELECT 1 FROM erp.campanhas       WHERE atualizado_em < criado_em
+      ) AS falhas
 
     UNION ALL
     -- Vigência: nenhum médico tem dois vínculos abertos na mesma unidade.

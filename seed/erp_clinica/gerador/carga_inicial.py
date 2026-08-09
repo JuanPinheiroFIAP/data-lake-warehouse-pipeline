@@ -1328,6 +1328,21 @@ class GeradorCargaInicial:
                 )
                 if data_cancelamento is not None and data_cancelamento < criado:
                     data_cancelamento = criado + timedelta(hours=6)
+
+                # `atualizado_em` é watermark de CDC e NUNCA pode estar no
+                # futuro: um pipeline que guarda MAX(atualizado_em) saltaria
+                # para a data do último slot agendado e perderia calado tudo
+                # que fosse alterado até lá.
+                #   cancelado  → a data do cancelamento;
+                #   já ocorreu → a data do atendimento (status foi resolvido ali);
+                #   slot futuro → a própria criação, porque nada aconteceu ainda.
+                if data_cancelamento is not None:
+                    atualizado = data_cancelamento
+                elif plano_dia[indice] <= self.hoje:
+                    atualizado = momento
+                else:
+                    atualizado = criado
+
                 yield (
                     indice + 1,
                     plano_paciente[indice],
@@ -1365,7 +1380,7 @@ class GeradorCargaInicial:
                     ),
                     data_cancelamento,
                     criado,
-                    data_cancelamento or momento,
+                    atualizado,
                 )
 
         total_agendamentos = copiar_linhas(
@@ -1725,8 +1740,9 @@ class GeradorCargaInicial:
                 _,
             ) in itens_do_orcamento:
                 executado = status == "Aprovado" and sorteia_bool(self.rng, 0.78)
-                data_execucao = (
-                    horario_comercial(
+                data_execucao = None
+                if executado:
+                    data_execucao = horario_comercial(
                         self.rng,
                         min(
                             data_aprovacao.date()
@@ -1734,9 +1750,12 @@ class GeradorCargaInicial:
                             self.hoje,
                         ),
                     )
-                    if executado
-                    else None
-                )
+                    # Quando o teto `hoje` colapsa a execução no mesmo dia da
+                    # emissão, a hora sorteada pode cair antes dela — e aí a
+                    # linha tem atualizado_em anterior ao criado_em, o que faz
+                    # a ordenação por watermark mentir.
+                    if data_execucao <= emissao:
+                        data_execucao = emissao + timedelta(hours=4)
                 itens.append(
                     (
                         orcamento_id,
