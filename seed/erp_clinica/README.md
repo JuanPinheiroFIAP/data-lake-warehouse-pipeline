@@ -68,10 +68,17 @@ poetry run python -m gerador resumo
 docker exec -i postgres_erp psql -U erp_app -d erp_clinica < ddl/99_validacao.sql
 ```
 
-O segundo roda 13 checagens de invariante de negócio. Todas devem sair `OK`.
+O segundo roda 15 checagens de invariante de negócio. Todas devem sair `OK`.
 Qualquer `FALHOU` é bug do gerador, não "dado sujo aceitável" — as
 inconsistências deste cenário são todas intencionais e estão documentadas nos
 `COMMENT` das tabelas.
+
+Duas dessas checagens cobrem o watermark de CDC, e valem uma nota: a base tem
+**relógio próprio**. A janela histórica termina em `data_fim_historico` e a
+simulação de dias avança dali, podendo passar da data real do host. Por isso o
+teste compara `atualizado_em` com o "agora do cenário" (o maior `criado_em` da
+base) e não com `now()` — comparar com o relógio de parede acusa violação onde
+só existe defasagem de calendário.
 
 ---
 
@@ -167,10 +174,43 @@ apareceu" viram a mesma linha, e o dashboard de faltas deixa de existir.
 
 ### 3. Duas estratégias de ingestão no mesmo banco, de propósito
 
-| Padrão | Tabelas | Ingestão |
-|---|---|---|
-| Mutável (sofre UPDATE) | `pacientes`, `orcamentos`, `parcelas`, `agendamentos`, `oportunidades` | watermark por `atualizado_em` + **MERGE** |
-| Append-only (só INSERT) | `atividades_crm`, `oportunidade_historico_etapa`, `orcamento_historico_status`, `pagamentos` | watermark por `criado_em`, **append puro** |
+A presença ou ausência da coluna `atualizado_em` **é** o contrato de ingestão.
+Quem não tem, nunca sofre UPDATE.
+
+**Append-only — 8 tabelas.** Watermark por `criado_em`, append puro, sem MERGE.
+
+| Tabela | Linhas | Natureza |
+|---|---:|---|
+| `atividades_crm` | 500.000 | log de evento |
+| `orcamento_historico_status` | 266.454 | log de evento |
+| `oportunidade_historico_etapa` | 174.602 | log de evento |
+| `pagamentos` | 115.461 | log de evento |
+| `prontuario_orcamento` | 99.999 | associação imutável (a bridge) |
+| `medico_especialidade` | 351 | associação imutável |
+| `especialidades` | 18 | domínio estático |
+| `etapas_funil` | 7 | domínio estático |
+
+**Mutáveis — 17 tabelas.** Watermark por `atualizado_em` + MERGE. Destas, 7
+sofrem UPDATE na simulação diária:
+
+| Tabela | O que muda |
+|---|---|
+| `pacientes` | telefone, e-mail, endereço |
+| `agendamentos` | status → realizado / falta / cancelado / reagendado |
+| `orcamentos` | aprovação, recusa, expiração |
+| `parcelas` | pagamento recebido, virada de vencimento |
+| `oportunidades` | etapa do funil, fechamento |
+| `leads` | status → qualificado, convertido |
+| `campanhas` | encerramento e custo realizado |
+
+As outras 10 têm a coluna mas hoje só recebem INSERT: `unidades`,
+`funcionarios`, `medicos`, `medico_unidade`, `convenios`, `procedimentos`,
+`paciente_convenio`, `consultas`, `prontuarios`, `orcamento_itens`. **Buraco de
+cobertura conhecido** — o MERGE do pipeline não é exercitado contra elas. Num
+ERP real várias mudariam: `orcamento_itens` viraria `Executado` na execução do
+procedimento (o que testaria MERGE em **chave composta**), e `medico_unidade`
+fecharia `data_fim` na transferência (MERGE em **SCD Tipo 2 vindo da origem**).
+São os dois pontos naturais para estender o simulador.
 
 Ter os dois padrões é o que justifica ter escrito MERGE de verdade em vez de
 `TRUNCATE + INSERT` em tudo. Um pipeline que faz append onde deveria fazer

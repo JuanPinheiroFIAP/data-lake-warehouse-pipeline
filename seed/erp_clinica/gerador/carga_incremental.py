@@ -24,6 +24,18 @@ Um detalhe de propósito: a virada de parcela para 'Vencida' acontece por
 passagem de tempo, sem ninguém tocar no registro. O ERP faz esse UPDATE em
 lote, o que produz um dia com milhares de linhas alteradas de uma vez — o
 famoso pico que derruba pipeline dimensionado pela média.
+
+Por que todo UPDATE usa `GREATEST(criado_em, %s)`
+-------------------------------------------------
+`self.agora` é UM horário comercial sorteado para o dia inteiro, enquanto cada
+linha nova recebe o seu próprio horário. Uma linha criada às 18h e alterada no
+mesmo dia com `self.agora = 13h45` terminaria com `atualizado_em` ANTERIOR ao
+`criado_em` — e um watermark que anda para trás faz o pipeline reprocessar ou
+pular linha sem motivo aparente. O `GREATEST` amarra o piso na criação.
+
+Isso não é dificuldade plantada: é dado inconsistente, que faz pipeline correto
+parecer errado. As dificuldades deste cenário são de modelagem (bridge, fan
+trap, atribuição quebrada) e estão documentadas nos COMMENT das tabelas.
 """
 
 from __future__ import annotations
@@ -233,7 +245,7 @@ class SimuladorDiaOperacional:
                    -- random() devolve double precision; sem o cast explícito o
                    -- produto vira double e o ROUND de duas casas não existe.
                    custo_realizado = ROUND((orcamento_previsto * (0.72 + random() * 0.46))::numeric, 2),
-                   atualizado_em   = %s
+                   atualizado_em   = GREATEST(criado_em, %s)
              WHERE status_campanha IN ('Ativa', 'Pausada')
                AND data_fim < %s
             """,
@@ -386,7 +398,7 @@ class SimuladorDiaOperacional:
                 total += 1
         # O lead muda de status junto — é UPDATE numa tabela mutável.
         self._executar_lote(
-            "UPDATE erp.leads SET status_lead = 'Qualificado', atualizado_em = %s WHERE lead_id = %s",
+            "UPDATE erp.leads SET status_lead = 'Qualificado', atualizado_em = GREATEST(criado_em, %s) WHERE lead_id = %s",
             leads_promovidos,
         )
         return total
@@ -467,7 +479,7 @@ class SimuladorDiaOperacional:
         self._executar_lote(
             """
             UPDATE erp.oportunidades
-               SET etapa_atual_id = %s, atualizado_em = %s
+               SET etapa_atual_id = %s, atualizado_em = GREATEST(criado_em, %s)
              WHERE oportunidade_id = %s
             """,
             atualizacoes_abertas,
@@ -479,7 +491,7 @@ class SimuladorDiaOperacional:
                    -- GREATEST protege a invariante fechamento >= abertura mesmo
                    -- que o horário sorteado do dia caia antes da abertura.
                    data_fechamento = GREATEST(data_abertura + interval '1 hour', %s),
-                   atualizado_em = %s
+                   atualizado_em = GREATEST(criado_em, %s)
              WHERE oportunidade_id = %s
             """,
             atualizacoes_fechadas,
@@ -590,7 +602,7 @@ class SimuladorDiaOperacional:
             linhas,
         )
         self._executar_lote(
-            "UPDATE erp.leads SET status_lead = 'Convertido', atualizado_em = %s WHERE lead_id = %s",
+            "UPDATE erp.leads SET status_lead = 'Convertido', atualizado_em = GREATEST(criado_em, %s) WHERE lead_id = %s",
             leads_convertidos,
         )
         return total
@@ -671,7 +683,7 @@ class SimuladorDiaOperacional:
                    email         = COALESCE(%s, email),
                    logradouro    = COALESCE(%s, logradouro),
                    cep           = COALESCE(%s, cep),
-                   atualizado_em = %s
+                   atualizado_em = GREATEST(criado_em, %s)
              WHERE paciente_id = %s
             """,
             atualizacoes,
@@ -823,7 +835,7 @@ class SimuladorDiaOperacional:
             """
             UPDATE erp.agendamentos
                SET status_agendamento = 'Reagendado', motivo_cancelamento = %s,
-                   data_cancelamento = %s, atualizado_em = %s
+                   data_cancelamento = %s, atualizado_em = GREATEST(criado_em, %s)
              WHERE agendamento_id = %s
             """,
             antigos,
@@ -855,7 +867,7 @@ class SimuladorDiaOperacional:
             """
             UPDATE erp.agendamentos
                SET status_agendamento = 'Cancelado', motivo_cancelamento = %s,
-                   data_cancelamento = %s, atualizado_em = %s
+                   data_cancelamento = %s, atualizado_em = GREATEST(criado_em, %s)
              WHERE agendamento_id = %s
             """,
             [
@@ -946,7 +958,7 @@ class SimuladorDiaOperacional:
             self._executar_lote(
                 f"""
                 UPDATE erp.agendamentos
-                   SET status_agendamento = '{status}', atualizado_em = %s
+                   SET status_agendamento = '{status}', atualizado_em = GREATEST(criado_em, %s)
                  WHERE agendamento_id = %s
                 """,
                 lote,
@@ -955,7 +967,7 @@ class SimuladorDiaOperacional:
             """
             UPDATE erp.agendamentos
                SET status_agendamento = 'Cancelado', motivo_cancelamento = %s,
-                   data_cancelamento = %s, atualizado_em = %s
+                   data_cancelamento = %s, atualizado_em = GREATEST(criado_em, %s)
              WHERE agendamento_id = %s
             """,
             cancelados,
@@ -1199,7 +1211,7 @@ class SimuladorDiaOperacional:
                         """
                         UPDATE erp.orcamentos
                            SET status_orcamento = 'Aprovado', data_aprovacao = %s,
-                               qtd_parcelas = %s, forma_pagamento = %s, atualizado_em = %s
+                               qtd_parcelas = %s, forma_pagamento = %s, atualizado_em = GREATEST(criado_em, %s)
                          WHERE orcamento_id = %s
                         """,
                         (self.agora, quantidade, forma, self.agora, orcamento_id),
@@ -1232,7 +1244,7 @@ class SimuladorDiaOperacional:
                     cursor.execute(
                         """
                         UPDATE erp.orcamentos
-                           SET status_orcamento = %s, motivo_recusa = %s, atualizado_em = %s
+                           SET status_orcamento = %s, motivo_recusa = %s, atualizado_em = GREATEST(criado_em, %s)
                          WHERE orcamento_id = %s
                         """,
                         (
@@ -1273,7 +1285,7 @@ class SimuladorDiaOperacional:
         return self._executar(
             """
             UPDATE erp.parcelas
-               SET status_parcela = 'Vencida', atualizado_em = %s
+               SET status_parcela = 'Vencida', atualizado_em = GREATEST(criado_em, %s)
              WHERE status_parcela = 'Aberta'
                AND data_vencimento < %s
             """,
@@ -1363,7 +1375,7 @@ class SimuladorDiaOperacional:
                SET status_parcela = %s,
                    valor_pago     = valor_pago + %s,
                    data_ultimo_pagamento = %s,
-                   atualizado_em  = %s
+                   atualizado_em  = GREATEST(criado_em, %s)
              WHERE orcamento_id = %s AND numero_parcela = %s
             """,
             atualizacoes,

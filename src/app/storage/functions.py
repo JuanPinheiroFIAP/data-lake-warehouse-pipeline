@@ -3,13 +3,16 @@ import os
 import sys
 from botocore.client import Config
 from botocore.exceptions import ClientError
-from datetime import datetime
+from datetime import date
 import io
 from dotenv import load_dotenv
+import pandas as pd
+import uuid
 
 load_dotenv()
 
 
+# Funções MinIO
 def iniciar_client_minio():
     """
     Inicializa e retorna o cliente Boto3 configurado para o MinIO local.
@@ -55,21 +58,23 @@ def garantir_infraestrutura_bucket(s3_client, list_names: list) -> None:
             print(f"Bucket '{item}' verificado. Seguindo o fluxo...")
 
 
-def upload_buffer_para_minio(
+def upload_buffer_para_minio_snapshot(
     s3_client,
     buffer_arquivo: io.BytesIO,
     bucket_name: str,
     nome_sistema: str,
     tabela: str,
+    data: date,
 ) -> None:
     """Faz o upload de um buffer de memória direto para o caminho virtual do MinIO."""
 
-    agora = datetime.now()
-    ano = agora.strftime("%Y")
-    mes = agora.strftime("%m")
-    dia = agora.strftime("%d")
-    horario_carga = agora.strftime("%Hh%Mmin")
-    nome_destino_s3 = f"{nome_sistema}/{tabela}/ano={ano}/mes={mes}/dia={dia}/{tabela}_{horario_carga}.parquet"
+    ano = data.strftime("%Y")
+    mes = data.strftime("%m")
+    dia = data.strftime("%d")
+
+    nome_destino_s3 = (
+        f"{nome_sistema}/{tabela}/ano={ano}/mes={mes}/dia={dia}/{tabela}.parquet"
+    )
 
     try:
         s3_client.upload_fileobj(
@@ -78,3 +83,23 @@ def upload_buffer_para_minio(
     except ClientError as e:
         print(e)
         raise e
+
+
+# --- Funções postgres ---
+# Função dedicada a extrair pequenas tabelas imutaveis
+def extrair_tabela_completa(engine, schema: str, nome_tabela: str) -> io.BytesIO:
+    """Lê uma tabela específica do banco e gera o arquivo Parquet bruto na memória RAM."""
+
+    # Usamos aspas duplas na f-string caso o banco tenha tabelas com nomes compostos ou maiúsculos
+    query = f'SELECT * FROM "{schema}"."{nome_tabela}"'
+    return pd.read_sql(query, engine)
+
+
+def converter_tabela_para_buffer(df: pd.DataFrame) -> io.BytesIO:
+    for col in df.select_dtypes(include=["object"]).columns:
+        df[col] = df[col].apply(lambda x: str(x) if isinstance(x, uuid.UUID) else x)
+
+    buffer_memoria = io.BytesIO()
+    df.to_parquet(buffer_memoria, index=False, engine="pyarrow")
+    buffer_memoria.seek(0)
+    return buffer_memoria
