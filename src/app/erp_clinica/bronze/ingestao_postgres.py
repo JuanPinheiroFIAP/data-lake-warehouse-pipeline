@@ -1,43 +1,46 @@
 from app.storage.functions import (
-    extrair_tabela_completa,
-    converter_tabela_para_buffer,
-    upload_buffer_para_minio,
     iniciar_client_minio,
     garantir_infraestrutura_bucket,
 )
+from app.erp_clinica.bronze.snapshot.snapshot import rodar_extracao_tabelas_estaticas
+import os
 from sqlalchemy import create_engine
 from dotenv import load_dotenv
-import os
+from datetime import date
+import argparse
 
 load_dotenv()
 
-# Esse arquivo vai ser responsável por extrair as tabelas do postgres e salvar no MinIO
 
-
-# --- Tabelas Estaticas ---
-def extrair_todas_as_tabelas(engine):
-    resultados = {}
-
-    for tabela in TABELAS_ESTATICAS:
-        df = extrair_tabela_completa(engine, "erp", tabela)
-        resultados[tabela] = converter_tabela_para_buffer(df)
-
-    return resultados
-
-
-def subir_para_minio(s3_client, lista_buffers: dict):
-    for tabela, buffer in lista_buffers.items():
-        upload_buffer_para_minio(s3_client, buffer, "bronze", "erp_clinicas", tabela)
-
-
-if __name__ == "__main__":
+# --- Função que roda o fluxo da camada Bronze ---
+def rodar_fluxo_bronze_erp(data: date):
+    # String de conexão como o postgres do ERP Ficticio
     string_conexao = os.getenv("ERP_STRING_CONNECTION")
-    TABELAS_ESTATICAS = ["especialidades", "etapas_funil"]
 
+    # Lista dos buckets para verificação
+    lista_buckets = ["bronze"]
+
+    # Realizando a conexão com o MinIO
     s3_client = iniciar_client_minio()
     engine = create_engine(string_conexao)
 
-    lista_buckets = ["bronze"]
+    # Rodando o fluxo
+    # Verificando se a estrutura inicial do MinIO esta ok
     garantir_infraestrutura_bucket(s3_client, lista_buckets)
-    resultado = extrair_todas_as_tabelas(engine)
-    subir_para_minio(s3_client, resultado)
+
+    rodar_extracao_tabelas_estaticas(engine, s3_client, data)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Injestão de Tabelas na camada Bronze."
+    )
+    parser.add_argument(
+        "--data",
+        type=date.fromisoformat,
+        required=True,
+        help="Data em que a função foi executada.",
+    )
+    args = parser.parse_args()
+
+    rodar_fluxo_bronze_erp(args.data)
