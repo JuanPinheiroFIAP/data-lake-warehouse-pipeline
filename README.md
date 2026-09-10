@@ -10,7 +10,38 @@ Projeto desenvolvido com o objetivo de aprimorar conceitos e práticas de Engenh
 
 ## Arquitetura
 
-**Banco Relacional (PostgreSQL) → Bronze → Silver → Gold → Data Warehouse → Power BI**
+```mermaid
+flowchart LR
+    ERP[("PostgreSQL<br/>ERP Rede Clínica<br/>25 tabelas · 2,4M linhas")]
+
+    subgraph lake["Data Lake · MinIO"]
+        direction LR
+        BRONZE["Bronze<br/>Parquet<br/>partição ano/mês/dia"]
+        SILVER["Silver<br/>limpeza · dedup · MERGE"]
+        GOLD["Gold<br/>modelo analítico"]
+    end
+
+    DW[("Data Warehouse<br/>PostgreSQL + dbt")]
+    BI["Power BI"]
+    AIR["Airflow<br/>orquestração"]
+
+    ERP -->|"snapshot · 2 de 25 tabelas"| BRONZE
+    BRONZE --> SILVER
+    SILVER --> GOLD
+    GOLD --> DW
+    DW --> BI
+    AIR -.-> BRONZE
+
+    classDef pronto fill:#c6f6d5,stroke:#276749,color:#1a202c
+    classDef parcial fill:#fefcbf,stroke:#975a16,color:#1a202c
+    classDef planejado fill:#edf2f7,stroke:#a0aec0,color:#4a5568
+
+    class ERP,BRONZE pronto
+    class DW parcial
+    class SILVER,GOLD,BI,AIR planejado
+```
+
+🟢 implementado · 🟡 provisionado, sem schema · ⚪ planejado
 
 ## Status
 
