@@ -101,7 +101,7 @@ Exemplo:
 
 ```text
 bronze/
-└── erp_clinica/
+└── erp_clinicas/
     └── especialidades/
         └── ano=2026/
             └── mes=09/
